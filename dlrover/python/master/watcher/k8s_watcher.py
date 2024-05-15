@@ -117,6 +117,11 @@ def _convert_pod_event_to_node_event(event, k8s_client):
             f"for {evt_type} event."
         )
         pods = k8s_client.list_namespaced_pod(pod_labels_selector)
+        logger.info(f"Got {len(pods.items)} pods with "
+                    f"labels: {pod_labels_selector}.")
+        for pod in pods.items:
+            logger.info(f"Pod: {pod.metadata.name} with status: {pod.status.phase}.")
+        raise RuntimeError("test")
         if (
             pods
             and len(pods.items) > 0
