@@ -121,7 +121,6 @@ def _convert_pod_event_to_node_event(event, k8s_client):
                     f"labels: {pod_labels_selector}.")
         for pod in pods.items:
             logger.info(f"Pod: {pod.metadata.name} with status: {pod.status.phase}.")
-        raise RuntimeError("test")
         if (
             pods
             and len(pods.items) > 0
@@ -216,7 +215,8 @@ class PodWatcher(NodeWatcher):
                 timeout_seconds=60,
             )
             for event in stream:
-                node_event = _convert_pod_event_to_node_event(event, pod_list)
+                node_event = _convert_pod_event_to_node_event(
+                    event, self._k8s_client)
                 if not node_event:
                     continue
                 yield node_event
