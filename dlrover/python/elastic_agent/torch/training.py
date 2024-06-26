@@ -10,13 +10,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import copy
 import functools
 import json
+import logging
 import os
 import shutil
 import signal
 import socket
+import sys
 import tempfile
 import time
 import uuid
@@ -61,6 +64,7 @@ from dlrover.python.common import env_utils
 from dlrover.python.common.constants import (
     Accelerators,
     ConfigPath,
+    LOGClass,
     NodeEnv,
     NodeErrorMessage,
     NodeStatus,
@@ -120,6 +124,8 @@ class ElasticLaunchConfig(LaunchConfig):
 
     Args:
         network_check: whether to check the network avaliable before training.
+        redirect_stdout: whether to redirct log(torch's redireted log) to
+            stdout.
         comm_perf_test: whether to test the communication performance.
         node_unit: the number of unit of nodes. The number of nodes must be
             a multiple of node_unit.
@@ -135,6 +141,7 @@ class ElasticLaunchConfig(LaunchConfig):
     """
 
     network_check: bool = False
+    redirect_stdout: bool = False
     comm_perf_test: bool = False
     node_unit: int = 1
     auto_config: bool = False
@@ -407,6 +414,25 @@ class ElasticTrainingAgent(LocalElasticAgent):
         self._save_ckpt_executor = ThreadPoolExecutor(max_workers=1)
         self._save_ckpt_future = None
 
+    def _setup_logger(self, level=logging.INFO):
+        torch_logger = logging.getLogger("torch")
+        if not torch_logger:
+            logger.warning("Torch logger not found when setting up logger.")
+            return
+        if any(
+            isinstance(handler, logging.StreamHandler)
+            and handler.stream == sys.stdout
+            for handler in torch_logger.handlers
+        ):
+            logger.info("Skip setup torch logger.")
+            return
+
+        # create a stdout handler for torch's logger
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setLevel(level)
+        stream_handler.setFormatter(logging.Formatter(LOGClass.FORMATTER))
+        torch_logger.addHandler(stream_handler)
+
     @prof
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
         r"""
@@ -578,6 +604,10 @@ class ElasticTrainingAgent(LocalElasticAgent):
             super()._stop_workers(worker_group)
 
     def _invoke_run(self, role: str = DEFAULT_ROLE) -> RunResult:
+        if self._config.redirect_stdout:
+            logger.info("Enable redirecting torch log to stdout.")
+            self._setup_logger()
+
         # Start a thread to save the checkpointing state dict from
         # the shared memory to the storage.
         AsyncCheckpointSaver.start_async_saving_ckpt()

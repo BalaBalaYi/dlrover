@@ -15,14 +15,13 @@ import logging
 import sys
 import typing
 
+from dlrover.python.common.constants import LOGClass
+
 logging.basicConfig(level=logging.INFO)
 
 _DEFAULT_LOGGER = "dlrover.logger"
 
-_DEFAULT_FORMATTER = logging.Formatter(
-    "[%(asctime)s] [%(levelname)s] "
-    "[%(filename)s:%(lineno)d:%(funcName)s] %(message)s"
-)
+_DEFAULT_FORMATTER = logging.Formatter(LOGClass.FORMATTER)
 
 _ch = logging.StreamHandler(stream=sys.stderr)
 _ch.setFormatter(_DEFAULT_FORMATTER)

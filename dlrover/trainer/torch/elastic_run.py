@@ -132,6 +132,12 @@ def parse_args(args):
         help="Whether to check network before starting training process.",
     )
     parser.add_argument(
+        "--redirect_stdout",
+        "--redirect_stdout",
+        action=check_env,
+        help="Whether to redirct log(torch's redireted log) to stdout.",
+    )
+    parser.add_argument(
         "--comm-perf-test",
         "--comm_perf_test",
         action=check_env,
@@ -302,6 +308,7 @@ def _elastic_config_from_args(
     if not version_less_than_230():
         elastic_config.log_dir = config.logs_specs.root_log_dir
     elastic_config.network_check = getattr(args, "network_check", False)
+    elastic_config.redirect_stdout = getattr(args, "redirect_stdout", False)
     elastic_config.comm_perf_test = getattr(args, "comm_perf_test", False)
     elastic_config.auto_tunning = getattr(args, "auto_tunning", False)
     elastic_config.auto_config = getattr(args, "auto_config", False)

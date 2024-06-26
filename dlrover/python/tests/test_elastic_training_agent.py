@@ -64,6 +64,7 @@ class ElasticTrainingAgentTest(unittest.TestCase):
         )
         self.config = ElasticLaunchConfig(**launch_config.__dict__)
         self.config.set_node_unit(2)
+        self.config.redirect_stdout = True
         rdzv_parameters = RendezvousParameters(
             backend=self.config.rdzv_backend,
             endpoint=self.config.rdzv_endpoint,
@@ -118,6 +119,17 @@ class ElasticTrainingAgentTest(unittest.TestCase):
         self.assertEqual(config.max_nodes, 4)
         self.assertEqual(config.min_nodes, 4)
         self.assertTrue(config.network_check)
+
+    def test_setup_logger(self):
+        agent = ElasticTrainingAgent(
+            node_rank=0,
+            config=self.config,
+            entrypoint="python",
+            spec=self.spec,
+            start_method=self.config.start_method,
+            log_dir=self.config.log_dir,
+        )
+        agent._setup_logger()
 
     def test_rank0_rendzevous(self):
         agent = ElasticTrainingAgent(

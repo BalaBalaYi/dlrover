@@ -12,6 +12,13 @@
 # limitations under the License.
 
 
+class LOGClass(object):
+    FORMATTER = (
+        "[%(asctime)s] [%(levelname)s] "
+        "[%(filename)s:%(lineno)d:%(funcName)s] %(message)s"
+    )
+
+
 class PriorityClass(object):
     LOW = "low"
     HIGH = "high"
