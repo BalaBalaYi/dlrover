@@ -11,6 +11,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import threading
+import time
 import tracemalloc
 import unittest
 
@@ -28,3 +30,24 @@ class DebugUtilTest(unittest.TestCase):
 
         snapshot = tracemalloc.take_snapshot()
         du.display_top_memory_using(snapshot)
+
+        result = []
+
+        def async_test(return_list):
+            i = 0
+            while i < 5:
+                return_list.append([i * 2 for x in range(100000)])
+                i += 1
+                time.sleep(1)
+
+        threading.Thread(
+            target=async_test,
+            kwargs={"return_list": result},
+            name="async_test",
+            daemon=True
+        ).start()
+
+        for _ in range(10):
+            snapshot = tracemalloc.take_snapshot()
+            du.display_top_memory_using(snapshot, limit=3)
+            time.sleep(0.5)
