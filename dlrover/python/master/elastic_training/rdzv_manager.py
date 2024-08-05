@@ -275,6 +275,8 @@ class RendezvousManager(metaclass=ABCMeta):
                 asw=asw,
                 psw=psw,
             )
+            logger.info(f"Node {meta.node_id} joined rendezvous "
+                        f"with rank {node_rank}.")
             self._waiting_nodes[node_rank] = meta
             self._rdzv_nodes = OrderedDict()
             self._lastcall_time = time.time()
