@@ -20,7 +20,7 @@ import threading
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional
+from typing import Deque, Dict, List, Optional
 
 from kubernetes import client
 from kubernetes.client import V1EnvVar, V1EnvVarSource, V1ObjectFieldSelector
@@ -28,6 +28,7 @@ from kubernetes.client import V1EnvVar, V1EnvVarSource, V1ObjectFieldSelector
 from dlrover.python.common.constants import (
     DistributionStrategy,
     ElasticJobLabel,
+    ErrorMonitorConstants,
     NodeEnv,
     NodeStatus,
     NodeType,
@@ -84,21 +85,23 @@ class PodScaler(Scaler):
     in a queue.
     """
 
-    def __init__(self, job_name, namespace):
+    def __init__(self, job_name, namespace, error_monitor=None):
         super(PodScaler, self).__init__(job_name)
         self._k8s_client = k8sClient.singleton_instance(namespace)
         self._svc_factory = k8sServiceFactory(namespace, job_name)
         self._namespace = namespace
         self._replica_template: Dict[str, client.V1Pod] = {}
-        self._create_node_queue: deque[Node] = deque()
+        self._create_node_queue: Deque[Node] = deque()
         self._scaling_lock = threading.Lock()
         self._plan = ScalePlan()
         self._ps_addrs: List[str] = []
         self._pod_stats: Dict[str, int] = {}
+        self._alive_pod_stats: Dict[str, int] = {}
         self._var_lock = threading.Lock()
         self._job_uid = ""
         self.api_client = client.ApiClient()
         self._master_addr = ""
+        self._error_monitor = error_monitor
         self._started = False
 
     def start(self):
@@ -120,12 +123,26 @@ class PodScaler(Scaler):
             if key is None:
                 # return whole dict
                 return self._pod_stats
-            # return specifed value
+            # return specified value
             return self._pod_stats.get(key, default)
 
     def _safe_set_pod_status(self, key, value):
         with self._var_lock:
+            logger.info(f"Set pod number {value} for {key}.")
             self._pod_stats[key] = value
+
+    def _safe_get_alive_pod_status(self, key, default):
+        with self._var_lock:
+            if key is None:
+                # return whole dict
+                return self._alive_pod_stats
+            # return specified value
+            return self._alive_pod_stats.get(key, default)
+
+    def _safe_set_alive_pod_status(self, key, value):
+        with self._var_lock:
+            logger.info(f"Set alive pod number {value} for {key}.")
+            self._alive_pod_stats[key] = value
 
     def _get_master_addr(self):
         svc_name = f"elasticjob-{self._job_name}-dlrover-master"
@@ -133,11 +150,11 @@ class PodScaler(Scaler):
         master_addr = f"{svc_name}:{port}"
         target_port = _dlrover_context.master_port
         if not self._check_master_service_avaliable(svc_name, target_port):
-            # On some clusters, the k8s service may not be avaliable because of
+            # On some clusters, the k8s service may not be available because of
             # incorrect DNS configurations. In such cases, it is necessary to
             # revert to use the Master's IP address for worker to connect with
             # the master. Note, that failover of master is not supported if
-            # the service is not avalilable.
+            # the service is not available.
             logger.info(
                 f"The service {master_addr} is not available and "
                 f"use the IP of master Pod."
@@ -235,22 +252,33 @@ class PodScaler(Scaler):
                 self._k8s_client.delete_pod(node.name)
 
     def _update_job_pods(self, job_pods: Dict[str, List[Node]]):
-        for type in [
+        for node_type in [
             NodeType.CHIEF,
             NodeType.MASTER,
             NodeType.PS,
             NodeType.WORKER,
             NodeType.EVALUATOR,
         ]:
-            cur_pods = job_pods.get(type, []) + self._get_type_pod_in_queue(
-                type
+            cur_pods = job_pods.get(
+                node_type, []
+            ) + self._get_type_pod_in_queue(node_type)
+            self._safe_set_pod_status(node_type, len(cur_pods))
+            self._safe_set_alive_pod_status(
+                node_type,
+                len(
+                    [
+                        cur_pod
+                        for cur_pod in cur_pods
+                        if cur_pod.status != NodeStatus.FAILED
+                        and cur_pod.status != NodeStatus.DELETED
+                    ]
+                ),
             )
-            self._safe_set_pod_status(type, len(cur_pods))
 
-    def _get_type_pod_in_queue(self, type):
+    def _get_type_pod_in_queue(self, node_type):
         pods = []
         for pod in self._create_node_queue:
-            if pod.type == type:
+            if pod.type == node_type:
                 pods.append(pod)
         return pods
 
@@ -387,24 +415,40 @@ class PodScaler(Scaler):
         return self._k8s_client.get_pod(pod_name)
 
     def _periodic_create_pod(self):
+        logger.info("Start the thread to create Pod.")
         with ThreadPoolExecutor(max_workers=4) as executor:
             while self._started:
                 while self._create_node_queue:
-                    executor.submit(self._create_pod_from_queue)
+                    executor.submit(
+                        self._create_pod_from_queue,
+                        self._create_node_queue.popleft(),
+                    )
                 time.sleep(3)
 
-    def _create_pod_from_queue(self):
-        node = self._create_node_queue.popleft()
+    def _create_pod_from_queue(self, node_from_queue=None):
+        """
+        Notice: we must ensure the sync operation of getting node happens
+        before the async execution, so we set 'node_from_queue' in the params
+        instead of pop the element in the current function to avoid invalid
+        async execution calls.
+
+        Args:
+            node_from_queue (Node): List of Node instances.
+        """
+
+        if node_from_queue is None:
+            return True
+
         succeed = False
-        if self._check_cluster_ready_for_pod(node):
-            pod = self._create_pod(node)
+        if self._check_cluster_ready_for_pod(node_from_queue):
+            pod = self._create_pod(node_from_queue)
             succeed = self._k8s_client.create_pod(pod)
         if not succeed:
-            self._create_node_queue.appendleft(node)
+            self._create_node_queue.appendleft(node_from_queue)
         else:
             # create svs for succeed pod
-            if not self._create_service_for_pod(node):
-                self._create_node_queue.appendleft(node)
+            if not self._create_service_for_pod(node_from_queue):
+                self._create_node_queue.appendleft(node_from_queue)
         return succeed
 
     def _check_cluster_ready_for_pod(self, node: Node):
@@ -508,6 +552,14 @@ class PodScaler(Scaler):
             V1EnvVar(name=NodeEnv.MONITOR_ENABLED, value="true")
         )
         self._patch_tf_config_into_env(pod, node)
+        if self._error_monitor:
+            self._error_monitor.report_event(
+                ErrorMonitorConstants.TYPE_INFO,
+                pod_name,
+                ErrorMonitorConstants.ACTION_WORKER_CREATE,
+                "",
+                {},
+            )
         return pod
 
     def _check_master_service_avaliable(self, host, port, timeout=15):
@@ -518,16 +570,17 @@ class PodScaler(Scaler):
                 logger.info(f"Master service check pass with {host}:{port}")
                 return True
             except socket.gaierror:
-                logger.warning(
+                logger.info(
                     f"Attempt {i}: Encountered gaierror while "
-                    f"performing master service check. "
-                    f"Service may not be available."
+                    "performing master service check. "
+                    "Service may still be unavailable."
                 )
                 time.sleep(1)
             except Exception as e:
-                logger.warning(
+                logger.info(
                     f"Attempt {i}: Encountered {str(e)} while "
-                    f"performing master service check."
+                    "performing master service check. "
+                    "Service may still be unavailable."
                 )
                 time.sleep(1)
 
@@ -560,6 +613,7 @@ class PodScaler(Scaler):
 
     def _create_service_for_pod(self, node: Node):
         # create or patch worker service
+        logger.info(f"create service for node {node}")
         service_ready = True
         if node.service_addr:
             service_name = node.service_addr.split(".")[0]

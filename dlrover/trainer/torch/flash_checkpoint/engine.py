@@ -307,8 +307,8 @@ class CheckpointEngine(metaclass=ABCMeta):
 
         acquired = self._shm_lock.acquire(blocking=False)
         logger.info(
-            f"{self._local_rank} acquired the lock of shared "
-            f"memory: {acquired}."
+            f"{self._rank}-{self._local_rank} acquired the lock of shared "
+            f"memory: {acquired} for step: {conf.step}."
         )
         all_rank_ready = check_all_rank_ready(self._saver_group, acquired)
         if not all_rank_ready or not state_dict:

@@ -131,7 +131,7 @@ class ExitCode(object):
     GPU_DRIVER_ERROR = 201
     GPU_POD_RESIDUE = 202
     GPU_INFOROM_CORRUPTED = 14
-    UNKNOWN_DEVICE = 128
+    CONTAINER_FAILED_OR_UNKNOWN_DEVICE = 128
 
 
 class NodeResourceLimit(object):
@@ -234,7 +234,10 @@ class NodeEnv(object):
 
     # process env
     TORCHELASTIC_RUN_ID = "TORCHELASTIC_RUN_ID"
+
+    # diagnosis env
     TRAINING_LOG_FILE = "TRAINING_LOG_FILE"
+    FAILURE_NODE_ERRORS = "FAILURE_NODE_ERRORS"
 
 
 class DatasetType(object):
@@ -278,6 +281,7 @@ class NodeErrorMessage(object):
 
 
 class NetworkFailureReason(object):
+    NO_INIT = "Not Initialized"
     NODE_FAILURE = "Node Failure"
     WAITING_NODE = "Waiting node"
 
@@ -306,15 +310,37 @@ class CheckpointConstant(object):
     SAVE_TIMEOUT = 600
 
 
+class JobConstant(object):
+    RDZV_JOIN_TIMEOUT_DEFAULT = 600
+    INSUFFICIENT_NODE_TIMEOUT_DEFAULT_MIN = 600
+    INSUFFICIENT_NODE_TIMEOUT_DEFAULT_MAX = 3600
+
+
 class Accelerators(object):
     NVIDIA_GPU = "nvidia.com/gpu"
     ASCEND_NPU = "ascend-npu"
 
 
 class AscendConstants(object):
-    # By default there are 16(max) npu on one machine
+    # By default， there are 16(max) npu on one machine
     NPU_PER_NODE = 16
 
     # represent the starting offset of the hccl's port using
     HCCL_PORT_START = "HCCL_IF_BASE_PORT"
     HCCL_PORT_START_DEFAULT = 64000
+
+
+class ErrorMonitorConstants(object):
+    TYPE_INFO = "info"
+    TYPE_ERROR = "error"
+
+    ACTION_WORKER_CREATE = "worker_create"
+    ACTION_STATUS_UPDATE = "status_update"
+    ACTION_EARLY_STOP = "early_stop"
+    ACTION_STOP = "stop"
+    ACTION_RELAUNCH = "relaunch"
+    ACTION_NOT_RELAUNCH = "not_relaunch"
+    ACTION_GLOBAL_STEP = "global_step"
+    ACTION_RDZV = "rendezvous"
+    ACTION_TRAINING_START = "training_start"
+    ACTION_RESTART_TRAINING = "restart_training"
