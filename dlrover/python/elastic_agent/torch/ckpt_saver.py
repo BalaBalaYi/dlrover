@@ -1017,11 +1017,11 @@ class TempDirCheckpointSaver(AsyncCheckpointSaver):
             save_timeout,
         )
 
-        if self._node_rank == 0:
-            # remove the history temp path if exists
-            self._remove_sub_dir_of_target_path(
-                os.path.join(self.checkpoint_dir, self._STAGE_DIR)
-            )
+        # if self._node_rank == 0:
+        #     # remove the history temp path if exists
+        #     self._remove_sub_dir_of_target_path(
+        #         os.path.join(self.checkpoint_dir, self._STAGE_DIR)
+        #     )
 
     def save_step_checkpoint(self, step):
         """
