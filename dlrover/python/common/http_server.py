@@ -13,12 +13,18 @@
 
 import abc
 import asyncio
+import os
+import signal
 import threading
 import time
 
+import psutil
 import tornado
+from tornado.ioloop import IOLoop
+from tornado.netutil import bind_sockets
 
 from dlrover.python.common.log import default_logger as logger
+from dlrover.python.util.common_util import is_port_in_use
 
 
 def is_asyncio_loop_running():
@@ -72,39 +78,82 @@ class TornadoHTTPServer(CustomHTTPServer):
     def __init__(self, address, port, handler_class):
         super().__init__(address, port, handler_class)
 
-        self._io_loop = None
         self._server = None
+        self._server_thread = None
         self._serving_started = False
+        self._stop_event = threading.Event()
+
+        signal.signal(signal.SIGINT, lambda sig, frame: self.stop())
+        signal.signal(signal.SIGTERM, lambda sig, frame: self.stop())
 
     def start(self):
         if not self.is_serving():
+            logger.info("Starting http server...")
             self._serving_started = True
-
-            server_thread = threading.Thread(
-                target=self._start_server,
+            self._server_thread = threading.Thread(
                 name=TornadoHTTPServer.SERVING_THREAD_NAME,
+                target=self._start,
+                daemon=True,
             )
-            server_thread.start()
+            self._server_thread.start()
 
-            while not self._io_loop or is_asyncio_loop_running():
-                time.sleep(0.1)
+            while True:
+                if is_port_in_use(self._port):
+                    break
+                time.sleep(0.5)
 
-    def _start_server(self):
+    @classmethod
+    def _cal_process_num_by_cpu(cls):
+        cpu_num = os.cpu_count()
+        if cpu_num <= 2:
+            return 1
+        elif 2 < cpu_num <= 8:
+            return cpu_num - 1
+        elif 8 < cpu_num <= 16:
+            return cpu_num - 2
+        else:
+            return cpu_num - 4
+
+    def _start(self):
         try:
+            sockets = bind_sockets(self._port)
+
+            http_process_num = self._cal_process_num_by_cpu()
+            logger.info(
+                f"Use {http_process_num} processes for "
+                f"tornado http server."
+            )
+            tornado.process.fork_processes(http_process_num)
+
             self._server = tornado.httpserver.HTTPServer(
                 tornado.web.Application(self._handler_classes)
             )
-            self._server.listen(self._port)
-            self._io_loop = tornado.ioloop.IOLoop.current()
-            self._io_loop.start()
+            self._server.add_sockets(sockets)
+            logger.info(
+                f"Http server process {os.getpid()} running "
+                f"on port {self._port}"
+            )
+
+            while not self._stop_event.is_set():
+                IOLoop.current().start()
         except Exception as e:
-            logger.error(f"Http server start with error: {e}")
+            if not self._stop_event.is_set():
+                logger.error(f"Http server start with error: {e}")
+            IOLoop.current().stop()
+        finally:
+            logger.info(f"Cleanly shutting down process {os.getpid()}...")
+            self._server.stop()
+            IOLoop.current().stop()
 
     def stop(self, grace=None):
-        if self._server:
-            self._server.stop()
-            if self._io_loop:
-                self._io_loop.add_callback(self._io_loop.stop)
+        if self._server_thread:
+            self._stop_event.set()
+            self._server_thread.join(timeout=5)
+
+            for child in psutil.Process(os.getpid()).children(recursive=True):
+                logger.info(f"Terminating child process: {child.pid}...")
+                child.terminate()
+                child.wait(timeout=5)
 
         self._serving_started = False
 
