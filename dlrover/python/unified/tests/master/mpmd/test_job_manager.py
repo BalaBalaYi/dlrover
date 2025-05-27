@@ -40,6 +40,8 @@ class JobManagerTest(BaseMasterTest):
 
         job_manager._executor.execute = MagicMock(return_value=None)
         job_manager.start_job()
+        self.assertFalse(job_manager.is_stopped())
+
         job_manager.stop_job()
 
     def test_get_scheduler(self):

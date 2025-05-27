@@ -20,7 +20,10 @@ from dlrover.python.unified.common.constant import (
     DLMasterConstant,
     DLWorkloadEnv,
 )
-from dlrover.python.unified.common.enums import SchedulingStrategyType
+from dlrover.python.unified.common.enums import (
+    JobStage,
+    SchedulingStrategyType,
+)
 from dlrover.python.unified.common.job_context import get_job_context
 from dlrover.python.unified.master.graph import DLExecutionGraph
 from dlrover.python.unified.master.scheduler import (
@@ -54,6 +57,16 @@ class JobManager(ABC):
     @abstractmethod
     def get_executor(self):
         pass
+
+    @abstractmethod
+    def is_job_finished(self):
+        pass
+
+    def is_stopped(self):
+        return self.context.get_job_stage() in [
+            JobStage.FINISHED,
+            JobStage.ERROR,
+        ]
 
     def _get_scheduling_type_from_context(self):
         return self._job_ctx.job_config.scheduling_strategy_type
@@ -182,15 +195,3 @@ class JobManager(ABC):
 
         logger.info("Start destroying all workloads...")
         self._scheduler.cleanup()
-
-    def is_job_finished(self):
-        return (
-            self._executor.is_trainer_finished()
-            and not self.context.is_in_failover()
-        )
-
-    def is_trainer_error(self):
-        return self._executor.is_trainer_error()
-
-    def get_trainer_error(self):
-        return self._executor.get_trainer_error()

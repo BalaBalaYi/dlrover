@@ -17,3 +17,15 @@ from dlrover.python.unified.master.mpmd.executor import MPMDTrainerExecutor
 class MPMDJobManager(JobManager):
     def get_executor(self):
         return MPMDTrainerExecutor(self._execution_graph)
+
+    def is_job_finished(self):
+        return (
+            self._executor.is_trainer_finished()
+            and not self.context.is_in_failover()
+        )
+
+    def is_trainer_error(self):
+        return self._executor.is_trainer_error()
+
+    def get_trainer_error(self):
+        return self._executor.get_trainer_error()
