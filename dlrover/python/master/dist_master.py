@@ -422,3 +422,20 @@ class DistributedJobMaster(JobMaster):
                 },
             )
         self._job_ctx.request_stop()
+
+    def request_restart(self, reason, msg=""):
+        logger.info(
+            f"Request to restart. Reason: {reason}, msg: {msg}."
+        )
+
+        if self._event_reporter:
+            self._event_reporter.report(
+                event_type=EventReportConstants.TYPE_WARN,
+                instance="job",
+                action=EventReportConstants.ACTION_RESTART,
+                msg=msg,
+                labels={
+                    "reason": reason,
+                },
+            )
+        self._job_ctx.

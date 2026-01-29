@@ -500,6 +500,7 @@ class EventReportConstants(object):
     ACTION_STATUS_UPDATE = "status_update"
     ACTION_EARLY_STOP = "early_stop"
     ACTION_STOP = "stop"
+    ACTION_RESTART = "restart"
     ACTION_RELAUNCH = "relaunch_worker"
     ACTION_NOT_RELAUNCH = "not_relaunch_worker"
     ACTION_GLOBAL_STEP = "global_step"
