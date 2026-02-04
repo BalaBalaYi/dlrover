@@ -14,6 +14,10 @@
 
 class BasicClass(object):
     LOG_LEVEL_ENV = "DLROVER_LOG_LEVEL"
+    LOG_ROOT_DIR_ENV = "DLROVER_LOG_ROOT_DIR"
+    LOG_ROTATE_MAX_BYTES_ENV = "DLROVER_LOG_ROTATE_MAX_BYTES"  # unit: bytes
+    LOG_ROTATE_BACKUP_COUNT_ENV = "DLROVER_LOG_ROTATE_BACKUP_COUNT"
+    LOG_AGENT_DIR_ENV = "DLROVER_LOG_AGENT_DIR"
 
 
 class PriorityClass(object):
@@ -349,6 +353,9 @@ class NodeEnv(object):
 
     # grpc env
     MASTER_CLIENT_TIMEOUT = "MASTER_CLIENT_TIMEOUT"
+
+    # extension env
+    DLROVER_EXTENSION_DYNAMIC_FAILOVER = "DLROVER_EXTENSION_DYNAMIC_FAILOVER"
 
 
 class DatasetType(object):

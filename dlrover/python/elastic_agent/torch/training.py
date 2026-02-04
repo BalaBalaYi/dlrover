@@ -1,4 +1,4 @@
-# Copyright 2025 The DLRover Authors. All rights reserved.
+# Copyright 2026 The DLRover Authors. All rights reserved.
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -19,7 +19,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 import traceback
 import uuid
@@ -94,6 +93,7 @@ from dlrover.python.diagnosis.common.diagnosis_action import (
     EventAction,
     NoAction,
     NodeAction,
+    JobAction,
 )
 from dlrover.python.elastic_agent.config.paral_config_tuner import (
     ParalConfigTuner,
@@ -105,6 +105,9 @@ from dlrover.python.elastic_agent.diagnosis.diagnosis_agent import (
 from dlrover.python.elastic_agent.master_client import MasterClient
 from dlrover.python.elastic_agent.monitor.training import TorchTrainingMonitor
 from dlrover.python.elastic_agent.torch.ckpt_saver import AsyncCheckpointSaver
+from dlrover.python.elastic_agent.torch.dynamic_failover import (
+    DynamicAgentFailoverExtension,
+)
 from dlrover.python.elastic_agent.torch.master_kv_store import MasterKVStore
 from dlrover.python.training_event import DLRoverAgentEvent
 from dlrover.python.util.common_util import (
@@ -180,6 +183,83 @@ class StopWorkerTimeoutError(RuntimeError):
     pass
 
 
+class LogConfig:
+    _log_dir: Optional[str] = None
+    _redirects: Union[Std, Dict[int, Std]] = Std.NONE
+    _tee: Union[Std, Dict[int, Std]] = Std.NONE
+
+    @classmethod
+    def _parse_std_value(cls, val) -> Std:
+        if val is None:
+            return Std.NONE
+
+        if isinstance(val, str):
+            try:
+                return Std.from_str(val)
+            except ValueError:
+                return Std.NONE
+        elif isinstance(val, Std):
+            return val
+
+        return Std.NONE
+
+    def setup(self, log_dir, redirects=None, tee=None):
+        if not log_dir:
+            return
+
+        self._log_dir = log_dir
+
+        redirects = self._parse_std_value(redirects)
+        tee = self._parse_std_value(tee)
+
+        if redirects == Std.NONE and tee == Std.NONE:
+            # override default when log dir is specified
+            self._redirects = Std.ALL
+            self._tee = Std.ALL
+        else:
+            self._redirects = redirects
+            self._tee = tee
+
+        logger.debug(
+            f"Log config: {self._log_dir}-{self._redirects}-{self._tee}"
+        )
+
+    @property
+    def log_dir(self) -> Optional[str]:
+        if not self._log_dir:
+            tmp_dir = "/tmp"
+            os.makedirs(tmp_dir, exist_ok=True)
+            return tmp_dir
+        return self._log_dir
+
+    @property
+    def redirects(self) -> Union[Std, Dict[int, Std]]:
+        return self._redirects
+
+    @property
+    def tee(self) -> Union[Std, Dict[int, Std]]:
+        return self._tee
+
+    @property
+    def logs_specs(self):
+        if version_less_than_230():
+            return {
+                "log_dir": self.log_dir,
+                "redirects": self.redirects,
+                "tee": self.tee,
+            }
+        else:
+            from torch.distributed.elastic.multiprocessing import (
+                DefaultLogsSpecs,
+            )
+
+            log_specs = DefaultLogsSpecs(
+                log_dir=self.log_dir, redirects=self.redirects, tee=self.tee
+            )
+            log_specs._run_log_dir = self.log_dir
+            return log_specs
+
+
 @dataclass
 class ElasticLaunchConfig(LaunchConfig):
     """
@@ -204,6 +284,10 @@ class ElasticLaunchConfig(LaunchConfig):
         training_log_file: the training log file of this training job
         failure_node_errors: the error information that indicate the node
             is a failure node
+        numa_affinity: whether numa affinity is enabled.
+        membind_policy: membind policy for numa affinity.
+        ucp_device_type: device type for unified checkpoint.
+        dynamic_failover_extension: extend implementation for dynamic failover.
     """
 
     precheck: int = 0
@@ -216,14 +300,32 @@ class ElasticLaunchConfig(LaunchConfig):
     exclude_straggler: bool = False
     save_at_breakpoint: bool = False
     accelerator: str = ""
-    log_dir: Optional[str] = None  # Keep Compatibility with PyTorch>=2.3.0
-    redirects: Union[Std, Dict[int, Std]] = Std.NONE
-    tee: Union[Std, Dict[int, Std]] = Std.NONE
+    log_config: LogConfig = LogConfig()
     training_log_file: str = ""
     failure_node_errors: str = ""
     numa_affinity: bool = False
     membind_policy: str = "none"
     ucp_device_type: str = "cpu"
+    dynamic_failover_extension: Optional[DynamicAgentFailoverExtension] = None
+
+    def get_log_dir(self):
+        return self.log_config.log_dir
+
+    def get_log_tee(self):
+        return self.log_config.tee
+
+    def get_log_redirects(self):
+        return self.log_config.redirects
+
+    def get_log_specs(self):
+        return self.log_config.logs_specs
+
+    def setup_log(self, log_dir, redirects=None, tee=None):
+        if log_dir:
+            logger.info(f"Initiate specified log directory: {log_dir}.")
+            self.log_config.setup(log_dir, redirects=redirects, tee=tee)
+        else:
+            logger.info("No specified log directory is configured.")
 
     def set_node_unit(self, node_unit):
         """Set the number unit of nodes."""
@@ -554,7 +656,6 @@ class ElasticTrainingAgent(LocalElasticAgent):
         spec: WorkerSpec,
         start_method="spawn",
         exit_barrier_timeout: float = 300,
-        log_dir: Optional[str] = None,
         training_log_file: str = "",
         failure_node_errors: str = "",
         with_diagnostician: bool = True,
@@ -564,10 +665,19 @@ class ElasticTrainingAgent(LocalElasticAgent):
                 spec=spec,
                 exit_barrier_timeout=exit_barrier_timeout,
             )
+            # compatible
+            # https://github.com/pytorch/pytorch/blob/39901f229520a5256505ec24782f716ee7ddc843/torch/distributed/elastic/agent/server/local_elastic_agent.py#L148C9-L148C22
+            self._log_dir = config.get_log_dir()
         else:
+            logger.info(
+                "Setup logging configuration for torch version>=230 with "
+                f"log_dir: {config.get_log_dir()}, "
+                f"redirections: {config.get_log_redirects()}, "
+                f"tee: {config.get_log_tee()}, log_specs: {config.get_log_specs().__dict__}"
+            )
             super().__init__(
                 spec=spec,
-                logs_specs=config.logs_specs,
+                logs_specs=config.get_log_specs(),
                 exit_barrier_timeout=exit_barrier_timeout,
             )
         self._node_rank = node_rank
@@ -575,7 +685,6 @@ class ElasticTrainingAgent(LocalElasticAgent):
         self._entrypoint = entrypoint
         self._start_method = start_method
         self._pcontext: Optional[PContext] = None
-        self._log_dir = log_dir or tempfile.mkdtemp(prefix="torchelastic_")
         self._worker_watchdog: Optional[timer.FileTimerServer] = None
         self._restart_count = 0
         self._remaining_failovers = self._remaining_restarts
@@ -593,6 +702,7 @@ class ElasticTrainingAgent(LocalElasticAgent):
                 errors=failure_node_errors,
                 node_rank=node_rank,
                 local_world_size=config.nproc_per_node,
+                dynamic_failover_extension=config.dynamic_failover_extension,
             )
         else:
             self._diagnose_agent = None
@@ -689,7 +799,7 @@ class ElasticTrainingAgent(LocalElasticAgent):
 
     @prof
     def _rendezvous(self, worker_group: WorkerGroup) -> None:
-        r"""
+        """
         Runs rendezvous for the workers specified by worker spec.
         Assigns workers a new global rank and world size.
         Updates the rendezvous store for the worker group.
@@ -1277,6 +1387,22 @@ class ElasticTrainingAgent(LocalElasticAgent):
                         return_values=f"{run_result.return_values}",
                         failures=f"{run_result.failures}",
                     )
+                elif action.action_type == DiagnosisActionType.JOB_ABORT:
+                    _agent_evt.job_abortion(
+                        node_rank=self._node_rank,
+                        reason=action.reason,
+                        state=f"{run_result.state.name}",
+                        return_values=f"{run_result.return_values}",
+                        failures=f"{run_result.failures}",
+                    )
+                elif action.action_type == DiagnosisActionType.JOB_RESTART:
+                    _agent_evt.job_restart(
+                        node_rank=self._node_rank,
+                        reason=action.reason,
+                        state=f"{run_result.state.name}",
+                        return_values=f"{run_result.return_values}",
+                        failures=f"{run_result.failures}",
+                    )
 
                 self._process_diagnosis_action(action)
 
@@ -1326,11 +1452,15 @@ class ElasticTrainingAgent(LocalElasticAgent):
                 raise Exception(f"[{role}] worker group in {state.name} state")
 
     def _process_diagnosis_action(self, action: DiagnosisAction):
+        if not action:
+            return
+        action_type = action.action_type
+
         if isinstance(action, NodeAction):
             action.__class__ = NodeAction
-            if action.action_type == DiagnosisActionType.RESTART_WORKER:
+            if action_type == DiagnosisActionType.RESTART_WORKER:
                 logger.info(
-                    f"Process diagnosis action: {action.action_type} {action.instance}"
+                    f"Process diagnosis action: {action_type} {action.instance}"
                 )
                 if action.instance == DiagnosisConstant.LOCAL_INSTANCE:
                     self._remaining_failovers -= 1
@@ -1338,9 +1468,9 @@ class ElasticTrainingAgent(LocalElasticAgent):
                         f"Decrement remaining FO to {self._remaining_failovers}"
                     )
                 self._restart_workers(self._worker_group)
-            elif action.action_type == DiagnosisActionType.RELAUNCH_WORKER:
+            elif action_type == DiagnosisActionType.RELAUNCH_WORKER:
                 logger.info(
-                    f"Process diagnosis action: {action.action_type} {action.instance}"
+                    f"Process diagnosis action: {action_type} {action.instance}"
                 )
                 self._stop_workers(self._worker_group)
                 self._worker_group.state = WorkerState.FAILED
@@ -1356,6 +1486,11 @@ class ElasticTrainingAgent(LocalElasticAgent):
                 msg=action.event_msg,
                 labels=labels,
             )
+        elif isinstance(action, JobAction):
+            logger.info(
+                f"Report job action to master for following process: {action_type}."
+            )
+            self._client.report_action(action)
 
     def _check_and_process_diagnosis_action(self):
         for instance in [
@@ -1682,7 +1817,7 @@ def launch_agent(
         f"  rdzv_configs     : {config.rdzv_configs}\n"
         f"  max_restarts     : {config.max_restarts}\n"
         f"  monitor_interval : {config.monitor_interval}\n"
-        f"  log_dir          : {config.log_dir}\n"
+        f"  log_dir          : {config.get_log_dir()}\n"
         f"  metrics_cfg      : {config.metrics_cfg}\n"
         f"  training_log     : {config.training_log_file}\n"
         f"  failure_errors   : {config.failure_node_errors}\n"
@@ -1712,7 +1847,6 @@ def launch_agent(
         entrypoint=entrypoint,
         spec=spec,
         start_method=config.start_method,
-        log_dir=config.log_dir,
         training_log_file=config.training_log_file,
         failure_node_errors=config.failure_node_errors,
         exit_barrier_timeout=900,
@@ -1826,10 +1960,16 @@ def _create_worker_spec(
         master_addr=master_addr,
     )
 
+    # for torch < 230, the tee and redirects config for log is located in spec
     if version_less_than_230():
-        spec.redirects = config.redirects
-        spec.tee = config.tee
-
+        spec.redirects = config.get_log_redirects()
+        spec.tee = config.get_log_tee()
+        logger.info(
+            "Setup logging configuration for torch version<230 with "
+            f"log_dir: {config.get_log_dir()}, "
+            f"redirections: {config.get_log_redirects()}, "
+            f"tee: {config.get_log_tee()}"
+        )
     return spec
 
 
@@ -1858,7 +1998,6 @@ class NodeCheckElasticAgent(ElasticTrainingAgent):
         spec: WorkerSpec,
         start_method="spawn",
         exit_barrier_timeout: float = 300,
-        log_dir: Optional[str] = None,
         check_round=1,
     ):
         super().__init__(
@@ -1868,10 +2007,8 @@ class NodeCheckElasticAgent(ElasticTrainingAgent):
             spec,
             start_method,
             exit_barrier_timeout,
-            log_dir,
             with_diagnostician=False,
         )
-        self._log_dir = log_dir or tempfile.mkdtemp(prefix="node_check_")
         self._check_round = check_round
         self._config: ElasticLaunchConfig = config
 
@@ -2063,7 +2200,7 @@ def _create_check_agent(
         f"  rdzv_configs     : {config.rdzv_configs}\n"
         f"  max_restarts     : {config.max_restarts}\n"
         f"  monitor_interval : {config.monitor_interval}\n"
-        f"  log_dir          : {config.log_dir}\n"
+        f"  log_dir          : {config.get_log_dir()}\n"
         f"  metrics_cfg      : {config.metrics_cfg}\n"
     )
 

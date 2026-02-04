@@ -27,6 +27,7 @@ from unittest import mock
 from unittest.mock import MagicMock, patch
 
 import psutil
+from dlrover.python.elastic_agent.torch.training import LogConfig
 from torch.distributed.elastic.agent.server.api import (
     RunResult,
     WorkerSpec,
@@ -142,8 +143,8 @@ class ElasticTrainingAgentTest(unittest.TestCase):
 
         if version_less_than_230():
             logs_dict = {
-                "redirects": self.config.redirects,
-                "tee": self.config.tee,
+                "redirects": self.config.get_log_redirects(),
+                "tee": self.config.get_log_tee(),
             }
         else:
             logs_dict = {}
@@ -244,7 +245,6 @@ class ElasticTrainingAgentTest(unittest.TestCase):
             entrypoint="python",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -274,7 +274,6 @@ class ElasticTrainingAgentTest(unittest.TestCase):
             entrypoint="python",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         # Mock node rank 0 joins the rendezvous.
@@ -319,7 +318,6 @@ class ElasticTrainingAgentTest(unittest.TestCase):
             entrypoint="python",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         self.rdzv_handler._client._node_id = 1
@@ -336,7 +334,6 @@ class ElasticTrainingAgentTest(unittest.TestCase):
             entrypoint="python",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         self.rdzv_handler._client._node_id = 1
@@ -357,7 +354,6 @@ class ElasticTrainingAgentTest(unittest.TestCase):
                 entrypoint="python",
                 spec=self.spec,
                 start_method=self.config.start_method,
-                log_dir=self.config.log_dir,
                 exit_barrier_timeout=1,
             )
             self.rdzv_handler._client._node_id = 1
@@ -379,7 +375,6 @@ class ElasticTrainingAgentTest(unittest.TestCase):
                 entrypoint="python",
                 spec=self.spec,
                 start_method=self.config.start_method,
-                log_dir=self.config.log_dir,
                 exit_barrier_timeout=1,
             )
             self.rdzv_handler._client._node_id = 1
@@ -406,7 +401,6 @@ class ElasticTrainingAgentTest(unittest.TestCase):
             entrypoint="python",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         agent._config.network_check = False
@@ -428,7 +422,6 @@ class ElasticTrainingAgentTest(unittest.TestCase):
             entrypoint="python",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         agent._config.network_check = False
@@ -466,6 +459,69 @@ class ElasticTrainingAgentTest(unittest.TestCase):
         )
         with self.assertRaises(RuntimeError):
             agent._initialize_workers(agent._worker_group, max_errors=3)
+
+    def test_log_config(self):
+        from torch.distributed.elastic.multiprocessing import Std
+
+        # test _parse_std_value
+        log_config = LogConfig()
+        result = LogConfig._parse_std_value(None)
+        self.assertEqual(result, Std.NONE)
+
+        result = LogConfig._parse_std_value("3")
+        self.assertEqual(result, Std.ALL)
+
+        result = LogConfig._parse_std_value("INVALID")
+        self.assertEqual(result, Std.NONE)
+
+        result = LogConfig._parse_std_value(Std.OUT)
+        self.assertEqual(result, Std.OUT)
+
+        result = LogConfig._parse_std_value(123)
+        self.assertEqual(result, Std.NONE)
+
+        # test setup
+        temp_dir = tempfile.mkdtemp()
+        try:
+            log_config.setup(None)
+            self.assertEqual(log_config.log_dir, "/tmp")
+            self.assertEqual(log_config.redirects, Std.NONE)
+            self.assertEqual(log_config.tee, Std.NONE)
+
+            log_config.setup(temp_dir)
+            self.assertEqual(log_config.log_dir, temp_dir)
+            self.assertEqual(log_config.redirects, Std.ALL)
+            self.assertEqual(log_config.tee, Std.ALL)
+
+            log_config.setup(temp_dir, redirects="3", tee=Std.ERR)
+            self.assertEqual(log_config.log_dir, temp_dir)
+            self.assertEqual(log_config.redirects, Std.ALL)
+            self.assertEqual(log_config.tee, Std.ERR)
+
+            with patch(
+                "dlrover.python.elastic_agent.torch.training.version_less_than_230"
+            ) as mock_version:
+                # test torch < 230
+                mock_version.return_value = True
+
+                logs_specs = log_config.logs_specs
+                self.assertIsNotNone(logs_specs)
+                self.assertTrue(isinstance(logs_specs, dict))
+
+                # test torch >= 230
+                mock_version.return_value = False
+                try:
+                    from torch.distributed.elastic.multiprocessing import (
+                        DefaultLogsSpecs,
+                    )
+
+                    logs_specs = log_config.logs_specs
+                    self.assertIsNotNone(logs_specs)
+                    self.assertTrue(isinstance(logs_specs, DefaultLogsSpecs))
+                except Exception:
+                    pass
+        finally:
+            shutil.rmtree(temp_dir)
 
 
 def mock_gpu_metric_collect(*args, **kwargs):
@@ -677,8 +733,8 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
 
         if version_less_than_230():
             logs_dict = {
-                "redirects": self.config.redirects,
-                "tee": self.config.tee,
+                "redirects": self.config.get_log_redirects(),
+                "tee": self.config.get_log_tee(),
             }
         else:
             logs_dict = {}
@@ -709,7 +765,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         agent._report_failure_to_master({})
@@ -726,7 +781,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         agent._monitor_workers = MagicMock(
@@ -781,7 +835,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         agent._wait_async_saver = mock.MagicMock(side_effect=[Exception])
@@ -817,7 +870,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -844,7 +896,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         storage = PosixDiskStorage()
@@ -878,7 +929,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="sleep",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         agent._initialize_workers = MagicMock(return_value=None)
@@ -902,7 +952,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
                 entrypoint="sleep",
                 spec=self.spec,
                 start_method=self.config.start_method,
-                log_dir=self.config.log_dir,
                 exit_barrier_timeout=1,
             )
             self.assertEqual(agent._rank_cpu_affinity[0], None)
@@ -927,7 +976,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
                 entrypoint="sleep",
                 spec=self.spec,
                 start_method=self.config.start_method,
-                log_dir=self.config.log_dir,
                 exit_barrier_timeout=1,
             )
             self.assertEqual(agent._rank_cpu_affinity[0], None)
@@ -946,7 +994,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         agent.sync_training_ports(1)
@@ -964,7 +1011,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -997,7 +1043,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint=self.spec.entrypoint,
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -1091,7 +1136,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -1112,7 +1156,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
                 entrypoint="echo",
                 spec=self.spec,
                 start_method=self.config.start_method,
-                log_dir=self.config.log_dir,
                 exit_barrier_timeout=1,
             )
             try:
@@ -1151,7 +1194,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -1204,7 +1246,6 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
         agent._stop_workers = mock.MagicMock(return_value=True)
@@ -1443,6 +1484,68 @@ class ElasticTrainingAgentRunTest(unittest.TestCase):
         # skip cuz checked
         _check_device(config)
 
+    def test_invoke_run_with_abort_restart_actions(self):
+        from dlrover.python.diagnosis.common.diagnosis_action import (
+            JobAbortionAction,
+            JobRestartAction,
+        )
+
+        self.config.network_check = False
+        agent = ElasticTrainingAgent(
+            node_rank=0,
+            config=self.config,
+            entrypoint="echo",
+            spec=self.spec,
+            start_method=self.config.start_method,
+            exit_barrier_timeout=1,
+        )
+
+        with patch(
+            "dlrover.python.elastic_agent.torch.training._agent_evt"
+        ) as mock_agent_evt:
+            mock_abort_action = JobAbortionAction(reason="test abort reason")
+            mock_agent_evt.job_abortion = MagicMock()
+
+            run_result = RunResult(
+                state=WorkerState.FAILED,
+                return_values={},
+                failures={"error": "test failure"},
+            )
+            agent._monitor_workers = MagicMock(return_value=run_result)
+            agent._client.report_action = MagicMock()
+
+            # Test JOB_ABORT action
+            agent._diagnose_agent.diagnose_training_failure = MagicMock(
+                return_value=mock_abort_action
+            )
+            agent._invoke_run()
+            mock_agent_evt.job_abortion.assert_called_once_with(
+                node_rank=0,
+                reason="test abort reason",
+                state="FAILED",
+                return_values="{}",
+                failures="{'error': 'test failure'}",
+            )
+
+            mock_agent_evt.job_abortion.reset_mock()
+            mock_agent_evt.job_restart = MagicMock()
+            mock_restart_action = JobRestartAction(
+                reason="test restart reason"
+            )
+
+            # Test JOB_RESTART action
+            agent._diagnose_agent.diagnose_training_failure = MagicMock(
+                return_value=mock_restart_action
+            )
+            agent._invoke_run()
+            mock_agent_evt.job_restart.assert_called_once_with(
+                node_rank=0,
+                reason="test restart reason",
+                state="FAILED",
+                return_values="{}",
+                failures="{'error': 'test failure'}",
+            )
+
 
 class NodeCheckElasticAgentTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -1478,8 +1581,8 @@ class NodeCheckElasticAgentTest(unittest.TestCase):
 
         if version_less_than_230():
             logs_dict = {
-                "redirects": self.config.redirects,
-                "tee": self.config.tee,
+                "redirects": self.config.get_log_redirects(),
+                "tee": self.config.get_log_tee(),
             }
         else:
             logs_dict = {}
@@ -1509,7 +1612,6 @@ class NodeCheckElasticAgentTest(unittest.TestCase):
             entrypoint="python",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
         )
         root = ConfigPath.NETWORK_CHECK_DATA_DIR
         if os.path.exists(root):
@@ -1763,8 +1865,8 @@ class ElasticTrainingAgentUcpTest(unittest.TestCase):
 
         if version_less_than_230():
             logs_dict = {
-                "redirects": self.config.redirects,
-                "tee": self.config.tee,
+                "redirects": self.config.get_log_redirects(),
+                "tee": self.config.get_log_tee(),
             }
         else:
             logs_dict = {}
@@ -1818,7 +1920,6 @@ class ElasticTrainingAgentUcpTest(unittest.TestCase):
                     entrypoint="echo",
                     spec=self.spec,
                     start_method=self.config.start_method,
-                    log_dir=self.config.log_dir,
                     exit_barrier_timeout=1,
                 )
 
@@ -1882,7 +1983,6 @@ class ElasticTrainingAgentUcpTest(unittest.TestCase):
                 entrypoint="echo",
                 spec=self.spec,
                 start_method=self.config.start_method,
-                log_dir=self.config.log_dir,
                 exit_barrier_timeout=1,
             )
 
@@ -1910,7 +2010,6 @@ class ElasticTrainingAgentUcpTest(unittest.TestCase):
                     entrypoint="echo",
                     spec=self.spec,
                     start_method=self.config.start_method,
-                    log_dir=self.config.log_dir,
                     exit_barrier_timeout=1,
                 )
 
@@ -1959,7 +2058,6 @@ class ElasticTrainingAgentUcpTest(unittest.TestCase):
                     entrypoint="echo",
                     spec=self.spec,
                     start_method=self.config.start_method,
-                    log_dir=self.config.log_dir,
                     exit_barrier_timeout=1,
                 )
 
@@ -2022,8 +2120,8 @@ class ElasticTrainingAgentGracefulExitTest(unittest.TestCase):
 
         if version_less_than_230():
             logs_dict = {
-                "redirects": self.config.redirects,
-                "tee": self.config.tee,
+                "redirects": self.config.get_log_redirects(),
+                "tee": self.config.get_log_tee(),
             }
         else:
             logs_dict = {}
@@ -2052,7 +2150,6 @@ class ElasticTrainingAgentGracefulExitTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -2084,7 +2181,6 @@ class ElasticTrainingAgentGracefulExitTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -2111,7 +2207,6 @@ class ElasticTrainingAgentGracefulExitTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -2137,7 +2232,6 @@ class ElasticTrainingAgentGracefulExitTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
@@ -2175,7 +2269,6 @@ class ElasticTrainingAgentGracefulExitTest(unittest.TestCase):
             entrypoint="echo",
             spec=self.spec,
             start_method=self.config.start_method,
-            log_dir=self.config.log_dir,
             exit_barrier_timeout=1,
         )
 
