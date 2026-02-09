@@ -1323,6 +1323,8 @@ class DistributedJobManagerTest(unittest.TestCase):
         job_nodes[NodeType.WORKER][1].rank_index = 1
         job_nodes[NodeType.WORKER][2].status = NodeStatus.FINISHED
         job_nodes[NodeType.WORKER][2].rank_index = 2
+        job_nodes[NodeType.WORKER][3].status = NodeStatus.FINISHED
+        job_nodes[NodeType.WORKER][3].rank_index = 0
 
         manager.restart()
         manager._scaler.scale.assert_called_once()
@@ -1482,6 +1484,10 @@ class LocalJobManagerTest(unittest.TestCase):
         job_context.request_stop()
         self.assertTrue(job_context.is_stopped())
 
+        job_manager.restart()
+        job_manager.stop()
+        self.assertEqual(job_manager._stopped, True)
+
     def test_suspend_unsuspend_job_context(self):
         job_context = get_job_context()
 
@@ -1502,3 +1508,8 @@ class LocalJobManagerTest(unittest.TestCase):
 
         job_context.request_suspend()
         self.assertEqual(job_context.get_job_stage(), JobStage.JOB_STOPPED)
+
+    def test_job_restart_job_context(self):
+        job_context = get_job_context()
+        self.assertEqual(job_context.get_job_restart_count(), 0)
+        self.assertEqual(job_context.inc_job_restart_count(), 1)
