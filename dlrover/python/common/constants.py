@@ -221,6 +221,8 @@ class JobExitReason(object):
     PENDING_TIMEOUT = "PendingTimeout"
     UNCOMPLETED_TIMEOUT = "UncompletedTimeout"
     NODE_CHECK_FAILED = "NodeCheckFailed"
+    BY_INTERNAL_SUGGESTION = "ByInternalSuggestion"
+    RESTART_OVER_LIMIT = "RestartOverLimit"
 
 
 class CustomMetricKeys:
@@ -555,6 +557,7 @@ class JobStage(object):
     JOB_STOPPING = "stopping"
     JOB_STOPPED = "stopped"
     JOB_SUSPENDED = "suspended"
+    JOB_RESTARTING = "restarting"
 
 
 class KeyValueOps(object):
