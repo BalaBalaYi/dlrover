@@ -1351,6 +1351,7 @@ class DistributedJobManagerTest(unittest.TestCase):
 
         # Set global max restart count to a low value
         from dlrover.python.common.global_context import Context
+
         dlrover_context = Context.singleton_instance()
         dlrover_context.job_max_restart_count = 5
 
