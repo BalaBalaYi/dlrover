@@ -251,6 +251,10 @@ class PodScalerTest(unittest.TestCase):
         scaler._started = True
         scaler._distribution_strategy = DistributionStrategy.PS
         resource = NodeResource(4, 8192)
+
+        scaler._elasticjob_exists = mock.MagicMock(return_value=True)
+        scaler.scale(ScalePlan())
+
         scale_plan = ScalePlan()
         self.assertTrue(scale_plan.empty())
         scale_plan.node_group_resources = {
@@ -424,7 +428,28 @@ class PodScalerTest(unittest.TestCase):
             self.assertTrue(first_last_time < 1)
             self.assertTrue(second_last_time < 1)
             self.assertTrue(third_last_time < 1)
+            scaler.stop()
 
-        time.sleep(1)
+    def test_execute_scale_with_pending(self):
+        scaler = PodScaler("elasticjob-sample", "default")
+        scaler._check_master_service_avaliable = mock.MagicMock(
+            return_value=True
+        )
+        scaler._elasticjob_exists = mock.MagicMock(return_value=True)
+        scaler._job_context.is_suspended = mock.MagicMock(return_value=False)
+        scaler._remove_nodes = mock.MagicMock()
+        scaler._scale = mock.MagicMock()
+        scaler.start()
 
-        scaler._started = False
+        try:
+            pending_plan = ScalePlan()
+            pending_plan.launch_nodes.append(
+                Node(NodeType.WORKER, 1, NodeResource(1, 1024))
+            )
+            scaler._pending_plan = pending_plan
+            scaler._execute_scale_with_pending(ScalePlan())
+
+            self.assertIsNone(scaler._pending_plan)
+            self.assertEqual(scaler._scale.call_count, 2)  # initial + pending
+        finally:
+            scaler.stop()

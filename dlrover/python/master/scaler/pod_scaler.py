@@ -241,7 +241,10 @@ class PodScaler(Scaler):
                     else:
                         self._pending_plan.merge(plan)
                     logger.info(
-                        f"Merged plan into pending: {self._pending_plan.to_json()}"
+                        "Merged plan into pending, "
+                        f"current launch nodes: {len(self._pending_plan.launch_nodes)}, "
+                        f"remove nodes: {len(self._pending_plan.remove_nodes)}"
+                        f"full plan: {self._pending_plan.to_json()}"
                     )
         else:
             self._scale(plan)
